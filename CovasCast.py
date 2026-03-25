@@ -5,6 +5,7 @@ import time
 import requests
 import os
 import sys
+import json
 from datetime import datetime
 from pydantic import BaseModel, Field
 from typing import Optional, List
@@ -171,6 +172,25 @@ class TwitchBot(commands.Bot):
 
         log('info', f'COVASCAST: CHAT - {author}: {content}')
 
+        # OpenAI moderation check — run first before adding to any cache
+        if self.plugin.moderation_enabled and self.plugin.openai_api_key:
+            flagged, categories = self.plugin._check_moderation(content)
+            if flagged:
+                log('info', f'COVASCAST: Message from {author} flagged by moderation')
+                if self.plugin.moderation_announce and self.plugin.helper:
+                    try:
+                        flagged_cats = [c for c, v in categories.items() if v]
+                        self.plugin.helper.dispatch_event(PluginEvent(
+                            plugin_event_name='twitch_moderated',
+                            plugin_event_content={
+                                'author': author,
+                                'categories': ', '.join(flagged_cats) if flagged_cats else 'policy violation'
+                            }
+                        ))
+                    except Exception as e:
+                        log('info', f'COVASCAST: moderation dispatch failed: {str(e)}')
+                return
+
         # Update GenUI projection
         is_mention = bool(mention_trigger and mention_trigger in content.lower())
         msg = TwitchChatMessage(
@@ -192,24 +212,8 @@ class TwitchBot(commands.Bot):
         if len(self.plugin.recent_chat) > 100:
             self.plugin.recent_chat.pop(0)
 
-        # OpenAI moderation check
-        if self.plugin.moderation_enabled and self.plugin.openai_api_key:
-            flagged, categories = self.plugin._check_moderation(content)
-            if flagged:
-                log('info', f'COVASCAST: Message from {author} flagged by moderation')
-                if self.plugin.moderation_announce and self.plugin.helper:
-                    try:
-                        flagged_cats = [c for c, v in categories.items() if v]
-                        self.plugin.helper.dispatch_event(PluginEvent(
-                            plugin_event_name='twitch_moderated',
-                            plugin_event_content={
-                                'author': author,
-                                'categories': ', '.join(flagged_cats) if flagged_cats else 'policy violation'
-                            }
-                        ))
-                    except Exception as e:
-                        log('info', f'COVASCAST: moderation dispatch failed: {str(e)}')
-                return
+        # Persist last 10 messages for context on restart
+        self.plugin._save_recent_chat()
 
         # Mention — trigger immediate reply
         if is_mention:
@@ -767,6 +771,9 @@ class CovasCastPlugin(PluginBase):
 
             log('info', 'COVASCAST: Setup complete')
 
+            # Load recent chat history for startup context
+            self._load_recent_chat()
+
         except Exception as e:
             log('info', f'COVASCAST: Failed during chat start: {str(e)}')
 
@@ -966,9 +973,8 @@ class CovasCastPlugin(PluginBase):
                     user_login=self.channel
                 )
                 await broadcaster.send_message(
-                    sender=int(bot_id),
-                    message=args.message,
-                    token_for=bot_id
+                    sender=self.bot.create_partialuser(user_id=int(bot_id)),
+                    message=args.message
                 )
 
             self._run_async(send())
@@ -1021,9 +1027,9 @@ class CovasCastPlugin(PluginBase):
                     user_id=int(broadcaster_id),
                     user_login=self.channel
                 )
+                moderator = self.bot.create_partialuser(user_id=int(bot_id))
                 await broadcaster.delete_chat_messages(
-                    token_for=bot_id,
-                    moderator_id=int(bot_id),
+                    moderator=moderator,
                     message_id=args.message_id
                 )
 
@@ -1049,19 +1055,19 @@ class CovasCastPlugin(PluginBase):
             bot_id = self.settings.get('bot_id', '').strip()
 
             async def timeout():
-                users = await self.bot.fetch_users(names=[username])
+                users = await self.bot.fetch_users(logins=[username])
                 if not users:
                     raise Exception(f"Could not find user: {username}")
                 broadcaster = self.bot.create_partialuser(
                     user_id=int(broadcaster_id),
                     user_login=self.channel
                 )
+                moderator = self.bot.create_partialuser(user_id=int(bot_id))
                 await broadcaster.timeout_user(
-                    token_for=bot_id,
-                    moderator_id=int(bot_id),
-                    user_id=users[0].id,
+                    moderator=moderator,
+                    user=users[0],
                     duration=duration,
-                    reason=reason
+                    reason=reason or None
                 )
 
             self._run_async(timeout())
@@ -1085,18 +1091,18 @@ class CovasCastPlugin(PluginBase):
             bot_id = self.settings.get('bot_id', '').strip()
 
             async def ban():
-                users = await self.bot.fetch_users(names=[username])
+                users = await self.bot.fetch_users(logins=[username])
                 if not users:
                     raise Exception(f"Could not find user: {username}")
                 broadcaster = self.bot.create_partialuser(
                     user_id=int(broadcaster_id),
                     user_login=self.channel
                 )
+                moderator = self.bot.create_partialuser(user_id=int(bot_id))
                 await broadcaster.ban_user(
-                    token_for=bot_id,
-                    moderator_id=int(bot_id),
-                    user_id=users[0].id,
-                    reason=reason
+                    moderator=moderator,
+                    user=users[0],
+                    reason=reason or None
                 )
 
             self._run_async(ban())
@@ -1119,17 +1125,17 @@ class CovasCastPlugin(PluginBase):
             bot_id = self.settings.get('bot_id', '').strip()
 
             async def unban():
-                users = await self.bot.fetch_users(names=[username])
+                users = await self.bot.fetch_users(logins=[username])
                 if not users:
                     raise Exception(f"Could not find user: {username}")
                 broadcaster = self.bot.create_partialuser(
                     user_id=int(broadcaster_id),
                     user_login=self.channel
                 )
+                moderator = self.bot.create_partialuser(user_id=int(bot_id))
                 await broadcaster.unban_user(
-                    token_for=bot_id,
-                    moderator_id=int(bot_id),
-                    user_id=users[0].id
+                    moderator=moderator,
+                    user=users[0]
                 )
 
             self._run_async(unban())
@@ -1139,6 +1145,42 @@ class CovasCastPlugin(PluginBase):
         except Exception as e:
             log('info', f'COVASCAST: Unban failed: {str(e)}')
             return f"COVASCAST: Failed to unban {args.username} — {str(e)}"
+
+    # -------------------------------------------------------------------------
+    # CHAT HISTORY PERSISTENCE
+    # Saves last 10 messages to disk so startup context is available
+    # -------------------------------------------------------------------------
+
+    def _chat_history_path(self) -> str:
+        return os.path.join(current_dir, 'chat_history.json')
+
+    def _save_recent_chat(self):
+        try:
+            last_10 = self.recent_chat[-10:]
+            with open(self._chat_history_path(), 'w', encoding='utf-8') as f:
+                json.dump(last_10, f, ensure_ascii=False)
+        except Exception:
+            pass
+
+    def _load_recent_chat(self):
+        try:
+            path = self._chat_history_path()
+            if os.path.exists(path):
+                with open(path, 'r', encoding='utf-8') as f:
+                    history = json.load(f)
+                if history:
+                    self.recent_chat = history
+                    # Also push to projection so HUD shows recent history
+                    for msg in history[-15:]:
+                        self.chat_projection.state.messages.append(TwitchChatMessage(
+                            author=msg.get('author', ''),
+                            content=msg.get('content', ''),
+                            time=msg.get('timestamp', '')[:16].replace('T', ' '),
+                            is_mention=False
+                        ))
+                    log('info', f'COVASCAST: Loaded {len(history)} messages from chat history')
+        except Exception as e:
+            log('info', f'COVASCAST: Could not load chat history: {str(e)}')
 
     # -------------------------------------------------------------------------
     # OPENAI MODERATION
