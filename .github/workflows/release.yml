@@ -1,0 +1,248 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build plugin package
+        run: |
+          python <<'PY'
+          import json
+          import re
+          import shutil
+          import zipfile
+          from pathlib import Path
+
+          repo_root = Path.cwd()
+          dist_dir = repo_root / "dist"
+          package_root = dist_dir / "package"
+
+          if dist_dir.exists():
+              shutil.rmtree(dist_dir)
+          package_root.mkdir(parents=True, exist_ok=True)
+
+          manifest = json.loads((repo_root / "manifest.json").read_text(encoding="utf-8"))
+          plugin_name = manifest.get("name") or repo_root.name
+          plugin_slug = re.sub(r"[^A-Za-z0-9._-]+", "-", plugin_name).strip("-").lower()
+
+          plugin_dir = package_root / plugin_name
+          ignored_names = {
+              ".git",
+              ".github",
+              ".idea",
+              ".venv",
+              "venv",
+              "__pycache__",
+              ".pytest_cache",
+              ".mypy_cache",
+              ".ruff_cache",
+              "dist",
+              "plugin_data",
+          }
+          ignored_files = {"Thumbs.db", ".DS_Store"}
+          ignored_suffixes = {".pyc", ".pyo"}
+          nested_ignore_patterns = (
+              ".git",
+              ".github",
+              ".idea",
+              ".venv",
+              "venv",
+              "__pycache__",
+              ".pytest_cache",
+              ".mypy_cache",
+              ".ruff_cache",
+              "dist",
+              "plugin_data",
+              "*.pyc",
+              "*.pyo",
+              "Thumbs.db",
+              ".DS_Store",
+          )
+
+          def should_skip(path: Path) -> bool:
+              rel = path.relative_to(repo_root)
+              if any(part in ignored_names for part in rel.parts):
+                  return True
+              if path.name in ignored_files:
+                  return True
+              if path.suffix in ignored_suffixes:
+                  return True
+              return False
+
+          for source in repo_root.iterdir():
+              if should_skip(source):
+                  continue
+
+              destination = plugin_dir / source.name
+              if source.is_dir():
+                  shutil.copytree(
+                      source,
+                      destination,
+                      ignore=shutil.ignore_patterns(*nested_ignore_patterns),
+                  )
+              else:
+                  shutil.copy2(source, destination)
+
+          zip_path = dist_dir / f"{plugin_slug}-linux.zip"
+          with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+              for file_path in plugin_dir.rglob("*"):
+                  if file_path.is_file():
+                      archive.write(file_path, file_path.relative_to(package_root))
+
+          print(f"Created {zip_path}")
+          PY
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-build
+          path: dist/*.zip
+
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build plugin package
+        shell: pwsh
+        run: |
+          python -c @'
+          import json
+          import re
+          import shutil
+          import zipfile
+          from pathlib import Path
+
+          repo_root = Path.cwd()
+          dist_dir = repo_root / "dist"
+          package_root = dist_dir / "package"
+
+          if dist_dir.exists():
+              shutil.rmtree(dist_dir)
+          package_root.mkdir(parents=True, exist_ok=True)
+
+          manifest = json.loads((repo_root / "manifest.json").read_text(encoding="utf-8"))
+          plugin_name = manifest.get("name") or repo_root.name
+          plugin_slug = re.sub(r"[^A-Za-z0-9._-]+", "-", plugin_name).strip("-").lower()
+
+          plugin_dir = package_root / plugin_name
+          ignored_names = {
+              ".git",
+              ".github",
+              ".idea",
+              ".venv",
+              "venv",
+              "__pycache__",
+              ".pytest_cache",
+              ".mypy_cache",
+              ".ruff_cache",
+              "dist",
+              "plugin_data",
+          }
+          ignored_files = {"Thumbs.db", ".DS_Store"}
+          ignored_suffixes = {".pyc", ".pyo"}
+          nested_ignore_patterns = (
+              ".git",
+              ".github",
+              ".idea",
+              ".venv",
+              "venv",
+              "__pycache__",
+              ".pytest_cache",
+              ".mypy_cache",
+              ".ruff_cache",
+              "dist",
+              "plugin_data",
+              "*.pyc",
+              "*.pyo",
+              "Thumbs.db",
+              ".DS_Store",
+          )
+
+          def should_skip(path: Path) -> bool:
+              rel = path.relative_to(repo_root)
+              if any(part in ignored_names for part in rel.parts):
+                  return True
+              if path.name in ignored_files:
+                  return True
+              if path.suffix in ignored_suffixes:
+                  return True
+              return False
+
+          for source in repo_root.iterdir():
+              if should_skip(source):
+                  continue
+
+              destination = plugin_dir / source.name
+              if source.is_dir():
+                  shutil.copytree(
+                      source,
+                      destination,
+                      ignore=shutil.ignore_patterns(*nested_ignore_patterns),
+                  )
+              else:
+                  shutil.copy2(source, destination)
+
+          zip_path = dist_dir / f"{plugin_slug}-windows.zip"
+          with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+              for file_path in plugin_dir.rglob("*"):
+                  if file_path.is_file():
+                      archive.write(file_path, file_path.relative_to(package_root))
+
+          print(f"Created {zip_path}")
+          '@
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: dist/*.zip
+
+  release:
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-build
+          path: dist
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-build
+          path: dist
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
