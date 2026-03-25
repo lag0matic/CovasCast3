@@ -1,0 +1,8 @@
+{
+  "guid": "f4a92c17-3e85-4d6b-a801-9c2f1b8e3d47",
+  "name": "CovasCast",
+  "version": "1.0.0",
+  "author": "Lag0matic",
+  "description": "Real-time Twitch chat and channel alert integration for COVAS:NEXT. React to follows, subs, raids, bits, redeems and chat mentions hands-free.",
+  "entrypoint": "CovasCast.py"
+}
