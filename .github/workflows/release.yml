@@ -43,6 +43,7 @@ jobs:
           plugin_slug = re.sub(r"[^A-Za-z0-9._-]+", "-", plugin_name).strip("-").lower()
 
           plugin_dir = package_root / plugin_name
+          plugin_dir.mkdir(parents=True, exist_ok=True)
           ignored_names = {
               ".git",
               ".github",
@@ -150,6 +151,7 @@ jobs:
           plugin_slug = re.sub(r"[^A-Za-z0-9._-]+", "-", plugin_name).strip("-").lower()
 
           plugin_dir = package_root / plugin_name
+          plugin_dir.mkdir(parents=True, exist_ok=True)
           ignored_names = {
               ".git",
               ".github",
