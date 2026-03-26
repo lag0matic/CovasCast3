@@ -5,7 +5,6 @@ import time
 import requests
 import os
 import sys
-import json
 from datetime import datetime
 from pydantic import BaseModel, Field
 from typing import Optional, List
@@ -211,9 +210,6 @@ class TwitchBot(commands.Bot):
         })
         if len(self.plugin.recent_chat) > 100:
             self.plugin.recent_chat.pop(0)
-
-        # Persist last 10 messages for context on restart
-        self.plugin._save_recent_chat()
 
         # Mention — trigger immediate reply
         if is_mention:
@@ -771,8 +767,8 @@ class CovasCastPlugin(PluginBase):
 
             log('info', 'COVASCAST: Setup complete')
 
-            # Load recent chat history for startup context
-            self._load_recent_chat()
+            # Restore recent chat from projection if session restarted
+            self._sync_from_projection()
 
         except Exception as e:
             log('info', f'COVASCAST: Failed during chat start: {str(e)}')
@@ -1147,40 +1143,23 @@ class CovasCastPlugin(PluginBase):
             return f"COVASCAST: Failed to unban {args.username} — {str(e)}"
 
     # -------------------------------------------------------------------------
-    # CHAT HISTORY PERSISTENCE
-    # Saves last 10 messages to disk so startup context is available
+    # CHAT HISTORY — sync from projection on session restart
+    # The projection persists in memory for the full COVAS:NEXT session.
+    # On chat session restart we just rebuild recent_chat from what's already there.
     # -------------------------------------------------------------------------
 
-    def _chat_history_path(self) -> str:
-        return os.path.join(current_dir, 'chat_history.json')
-
-    def _save_recent_chat(self):
-        try:
-            last_10 = self.recent_chat[-10:]
-            with open(self._chat_history_path(), 'w', encoding='utf-8') as f:
-                json.dump(last_10, f, ensure_ascii=False)
-        except Exception:
-            pass
-
-    def _load_recent_chat(self):
-        try:
-            path = self._chat_history_path()
-            if os.path.exists(path):
-                with open(path, 'r', encoding='utf-8') as f:
-                    history = json.load(f)
-                if history:
-                    self.recent_chat = history
-                    # Also push to projection so HUD shows recent history
-                    for msg in history[-15:]:
-                        self.chat_projection.state.messages.append(TwitchChatMessage(
-                            author=msg.get('author', ''),
-                            content=msg.get('content', ''),
-                            time=msg.get('timestamp', '')[:16].replace('T', ' '),
-                            is_mention=False
-                        ))
-                    log('info', f'COVASCAST: Loaded {len(history)} messages from chat history')
-        except Exception as e:
-            log('info', f'COVASCAST: Could not load chat history: {str(e)}')
+    def _sync_from_projection(self):
+        """Rebuild recent_chat from projection buffer on session restart."""
+        if self.chat_projection.state.messages:
+            self.recent_chat = [
+                {
+                    'author': m.author,
+                    'content': m.content,
+                    'timestamp': m.time
+                }
+                for m in self.chat_projection.state.messages
+            ]
+            log('info', f'COVASCAST: Restored {len(self.recent_chat)} messages from projection')
 
     # -------------------------------------------------------------------------
     # OPENAI MODERATION
